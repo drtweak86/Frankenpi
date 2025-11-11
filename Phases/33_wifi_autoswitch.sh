@@ -19,7 +19,7 @@ WIFI_IFACE="wlan0"
 
 # Thresholds
 MIN_SIGNAL_PCT=50    # NM % signal
-MIN_RSSI="-75"       # fallback RSSI in dBm
+MIN_RSSI=-75         # fallback RSSI in dBm
 
 # Kodi notification on switch (1=yes, 0=no)
 KODI_NOTIFY=1
@@ -34,7 +34,7 @@ CONF="/etc/default/wifi-autoswitch"
 [ -r "$CONF" ] && . "$CONF"
 
 notify() {
-  if [ "$KODI_NOTIFY" = "1" ] && command -v kodi-send >/dev/null 2>&1; then
+  if [ "${KODI_NOTIFY:-0}" = "1" ] && command -v kodi-send >/dev/null 2>&1; then
     kodi-send --action="Notification(WiFi,$1,3000)" >/dev/null 2>&1 || true
   fi
   echo "[wifi-autoswitch] $1"
@@ -90,8 +90,9 @@ wpa_switch() {
 }
 
 main() {
-  [ -n "$PREFERRED_BSSIDS" ] || exit 0
+  [ -n "${PREFERRED_BSSIDS:-}" ] || exit 0
 
+  # ---- NetworkManager path ----
   if has nmcli; then
     best="$(nm_best || true)"
     [ -n "$best" ] || exit 0
@@ -105,17 +106,23 @@ main() {
     exit 0
   fi
 
+  # ---- iw/wpa_cli fallback ----
   if has iw || has wpa_cli; then
-    best_ssid=""; best_bssid=""; best_rssi=-999
-    scan_rssi | while IFS='|' read -r ssid bssid rssi; do
+    best_ssid=""; best_bssid=""; best_rssi="$MIN_RSSI"
+    # Use a temp file to avoid subshell issues
+    TMP="$(mktemp)"
+    scan_rssi > "$TMP" || true
+    while IFS='|' read -r ssid bssid rssi; do
       for pair in $PREFERRED_BSSIDS; do
-        pref_ssid="$(echo $pair | cut -d'|' -f1)"
-        pref_bssid="$(echo $pair | cut -d'|' -f2)"
+        pref_ssid="$(echo "$pair" | cut -d'|' -f1)"
+        pref_bssid="$(echo "$pair" | cut -d'|' -f2)"
         if [ "$ssid" = "$pref_ssid" ] && [ "$bssid" = "$pref_bssid" ] && [ "$rssi" -gt "$best_rssi" ]; then
           best_ssid="$ssid"; best_bssid="$bssid"; best_rssi="$rssi"
         fi
       done
-    done
+    done < "$TMP"
+    rm -f "$TMP"
+
     [ -n "$best_bssid" ] || exit 0
     [ "$best_rssi" -ge "$MIN_RSSI" ] || exit 0
     cur="$(wpa_current_bssid || true)"

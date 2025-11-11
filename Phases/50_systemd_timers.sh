@@ -2,19 +2,29 @@
 # 50_busybox_timers.sh — Install FrankenPi backup + maintenance cron jobs
 set -eu
 
-echo "[50_busybox_timers] Installing backup & maintenance scripts + cron jobs…"
+ts(){ date '+%F %T'; }
+
+echo "[50_busybox_timers][$(ts)] Installing backup & maintenance scripts + cron jobs…"
 
 # --- install scripts ---
-install -D -m 0755 /opt/frankenpi/phases/40_backup.sh /usr/local/sbin/frankenpi-backup
-install -D -m 0755 /opt/frankenpi/phases/41_maintenance.sh /usr/local/sbin/frankenpi-maint
-install -D -m 0755 /opt/frankenpi/phases/42_deepclean.sh /usr/local/sbin/frankenpi-deepclean
+SCRIPTS="/opt/frankenpi/phases/40_backup.sh /opt/frankenpi/phases/41_maintenance.sh /opt/frankenpi/phases/42_deepclean.sh"
+DEST_DIR="/usr/local/sbin"
+
+for s in $SCRIPTS; do
+  if [ -f "$s" ]; then
+    install -D -m 0755 "$s" "$DEST_DIR/$(basename "$s" .sh)"
+    echo "[50_busybox_timers][$(ts)] Installed $(basename "$s")"
+  else
+    echo "[50_busybox_timers][WARN] Missing script: $s" >&2
+  fi
+done
 
 # --- create cron entries ---
-CRON_FILE="/etc/cron.d/frankenpi"
+CRON_DIR="/etc/cron.d"
+CRON_FILE="$CRON_DIR/frankenpi"
 
-# backup: weekly Sunday 04:30
-# maintenance: weekly Saturday 03:40
-# deep clean: monthly 1st day 04:10
+mkdir -p "$CRON_DIR"
+
 cat > "$CRON_FILE" <<'EOF'
 # FrankenPi cron jobs
 
@@ -30,6 +40,6 @@ EOF
 
 chmod 0644 "$CRON_FILE"
 
-echo "[50_busybox_timers] Installed scripts and cron jobs."
+echo "[50_busybox_timers][$(ts)] Installed scripts and cron jobs."
 echo "  Check cron entries with: cat $CRON_FILE"
-echo "  Cron should now run backups, maintenance, and deep clean automatically."
+echo "  Cron will now run backups, maintenance, and deep clean automatically."

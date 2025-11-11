@@ -22,7 +22,7 @@ if command -v curl >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then
         log "[22_argon_one] Enabled $svc"
         exit 0
       fi
-    end
+    done
   else
     log "[22_argon_one] Argon installer failed; falling back to FrankenPi fan."
   fi
@@ -53,22 +53,24 @@ if [ ! -x /usr/local/bin/frankenpi-argon-fan.sh ]; then
   cat >/usr/local/bin/frankenpi-argon-fan.sh <<'SH'
 #!/bin/sh
 # Simple SoC temp-based fan control (works for many Argon One cases)
-# Tune these if needed:
 MIN_DUTY=40   # %
 MAX_DUTY=100  # %
 T1=45         # °C start ramp
 T2=65         # °C full
+
 while :; do
   TEMP_C=$(awk '{print $1/1000}' /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo 50)
   if [ "$TEMP_C" -lt "$T1" ]; then duty=$MIN_DUTY
   elif [ "$TEMP_C" -gt "$T2" ]; then duty=$MAX_DUTY
-  else duty=$(( MIN_DUTY + ( (TEMP_C - T1) * (MAX_DUTY - MIN_DUTY) / (T2 - T1) ) ))
+  else
+    duty=$(( MIN_DUTY + ( (TEMP_C - T1) * (MAX_DUTY - MIN_DUTY) / (T2 - T1) ) ))
   fi
-  # If argononed exists, let it set duty (many installs provide this tool)
+
+  # If argononed exists, let it set duty
   if command -v argononed >/dev/null 2>&1; then
     argononed --set "$duty" >/dev/null 2>&1 || true
   fi
-  sleep 5
+  sleep 10
 done
 SH
   chmod +x /usr/local/bin/frankenpi-argon-fan.sh

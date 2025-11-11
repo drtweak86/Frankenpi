@@ -1,5 +1,5 @@
 #!/bin/sh
-# FrankenPi: Wi-Fi autoswitch (prefers NetworkManager, falls back to wpa_cli)
+# FrankenPi: Wi-Fi autoswitch (BSSID-aware)
 set -eu
 . /usr/local/bin/frankenpi-compat.sh   # log, svc_*
 
@@ -12,18 +12,15 @@ TMR="/etc/systemd/system/frankenpi-wifi-autoswitch.timer"
 if [ ! -f "$CFG" ]; then
   mkdir -p /etc/default
   cat >"$CFG"<<'CFG'
-# SSIDs in preference order (space-separated)
-PREFERRED_SSIDS="HomeWiFi UpstairsWiFi"
+# Preferred networks (SSID|BSSID format, space-separated)
+PREFERRED_BSSIDS="Batcave|20:B8:2B:18:58:99 Batcave|20:B8:2B:18:58:98"
 
 # Wi-Fi interface
 WIFI_IFACE="wlan0"
 
-# Thresholds:
-# If NetworkManager is available, SIGNAL is in % (0–100)
-MIN_SIGNAL_PCT=50
-
-# If using iw/wpa_cli path, MIN_RSSI is in dBm (e.g., -75 = better than -75 dBm)
-MIN_RSSI="-75"
+# Thresholds
+MIN_SIGNAL_PCT=50    # NM % signal
+MIN_RSSI="-75"       # fallback RSSI in dBm
 
 # Kodi notification on switch (1=yes, 0=no)
 KODI_NOTIFY=1
@@ -37,12 +34,6 @@ set -eu
 CONF="/etc/default/wifi-autoswitch"
 [ -r "$CONF" ] && . "$CONF"
 
-PREFERRED_SSIDS="${PREFERRED_SSIDS:-}"
-WIFI_IFACE="${WIFI_IFACE:-wlan0}"
-MIN_SIGNAL_PCT="${MIN_SIGNAL_PCT:-50}"
-MIN_RSSI="${MIN_RSSI:--75}"
-KODI_NOTIFY="${KODI_NOTIFY:-1}"
-
 notify() {
   if [ "$KODI_NOTIFY" = "1" ] && command -v kodi-send >/dev/null 2>&1; then
     kodi-send --action="Notification(WiFi,$1,3000)" >/dev/null 2>&1 || true
@@ -52,112 +43,101 @@ notify() {
 
 has(){ command -v "$1" >/dev/null 2>&1; }
 
-# --------- NetworkManager path (preferred) ----------
+# --------- NetworkManager path ----------
 nm_best() {
-  # Output: "SSID|SIGNAL"
-  # Ignore hidden entries with blank SSID
-  nmcli -f SSID,SIGNAL dev wifi list ifname "$WIFI_IFACE" 2>/dev/null \
-    | awk -v pref="$PREFERRED_SSIDS" '
+  nmcli -f BSSID,SSID,SIGNAL dev wifi list ifname "$WIFI_IFACE" 2>/dev/null \
+    | awk -v pref="$PREFERRED_BSSIDS" '
       BEGIN{
-        n=split(pref, P, " ");
-        for(i=1;i<=n;i++) rank[P[i]]=i;
-      }
-      NR>1 && $1!=""{
-        # SSID may contain spaces: rebuild columns
-        sig=$NF; $NF="";
-        ssid=substr($0, 1, length($0)-length(sig)-1);
-        gsub(/^[ \t]+|[ \t]+$/, "", ssid);
-        if (ssid!="") {
-          r=(ssid in rank)?rank[ssid]:9999;
-          printf("%s|%s|%d\n", ssid, sig, r);
+        n=split(pref,P," ");
+        for(i=1;i<=n;i++) {
+          split(P[i],pair,"|");
+          map[pair[1]"|"pair[2]]=i
         }
       }
-    ' | sort -t'|' -k3,3n -k2,2nr | head -n1
+      NR>1 && $1!=""{
+        bssid=$1; ssid=$2; sig=$3;
+        rank=(ssid "|" bssid in map)?map[ssid "|" bssid]:9999;
+        printf("%s|%s|%s|%d\n", ssid, bssid, sig, rank)
+      }
+    ' | sort -t'|' -k4,4n -k3,3nr | head -n1
 }
 
-nm_current_ssid() {
-  nmcli -t -f ACTIVE,SSID connection show --active 2>/dev/null \
+nm_current_bssid() {
+  nmcli -t -f ACTIVE,BSSID connection show --active 2>/dev/null \
     | awk -F: '$1=="yes"{print $2; exit}'
 }
 
 nm_switch() {
-  ssid="$1"
-  # Try exact match connection; if none, let NM auto-connect
-  cid="$(nmcli -t -f NAME connection show 2>/dev/null | awk -F: -v s="$ssid" '$1==s{print $1; exit}')"
-  if [ -n "$cid" ]; then
-    nmcli connection up id "$cid" >/dev/null 2>&1
-  else
-    nmcli device wifi connect "$ssid" ifname "$WIFI_IFACE" >/dev/null 2>&1
-  fi
+  ssid="$1"; bssid="$2"
+  nmcli device wifi connect "$ssid" bssid "$bssid" ifname "$WIFI_IFACE" >/dev/null 2>&1
 }
 
 # --------- iw/wpa_cli fallback ----------
 scan_rssi() {
-  # Output lines: "SSID|RSSI"
   if has iw; then
     iw dev "$WIFI_IFACE" scan 2>/dev/null \
       | awk '
-        BEGIN{ ss=""; }
-        /^BSS / { ss=""; next }
+        BEGIN{ ss=""; bssid=""; }
+        /^BSS / { split($2,B,"/"); bssid=B[1]; next }
         /SSID:/ { ss=$0; sub(/^.*SSID: /,"",ss); next }
-        /signal:/ && ss!="" { sig=$0; sub(/^.*signal: /,"",sig); sub(/ dBm.*/,"",sig); printf("%s|%s\n", ss, sig); ss="" }
+        /signal:/ && ss!="" { sig=$0; sub(/^.*signal: /,"",sig); sub(/ dBm.*/,"",sig); printf("%s|%s|%s\n", ss,bssid,sig); ss=""; bssid="" }
       '
   elif has wpa_cli; then
     wpa_cli -i "$WIFI_IFACE" scan >/dev/null 2>&1 || true
     sleep 1
     wpa_cli -i "$WIFI_IFACE" scan_results 2>/dev/null \
-      | awk 'NR>2{printf("%s|%s\n",$5,$3)}'   # SSID|RSSI
+      | awk 'NR>2{printf("%s|%s|%s\n",$5,$1,$3)}'
   fi
 }
 
-wpa_current_ssid() {
-  iwgetid -r 2>/dev/null || true
+wpa_current_bssid() {
+  iw dev "$WIFI_IFACE" link | awk '/Connected/ {print $2; exit}'
 }
 
 wpa_switch() {
-  ssid="$1"
+  ssid="$1"; bssid="$2"
   nid="$(wpa_cli -i "$WIFI_IFACE" list_networks 2>/dev/null | awk -F'\t' -v s="$ssid" '$2==s{print $1; exit}')"
   [ -n "$nid" ] && wpa_cli -i "$WIFI_IFACE" select_network "$nid" >/dev/null 2>&1
 }
 
 main() {
-  [ -n "$PREFERRED_SSIDS" ] || exit 0
+  [ -n "$PREFERRED_BSSIDS" ] || exit 0
 
   if has nmcli; then
     best="$(nm_best || true)"
     [ -n "$best" ] || exit 0
     b_ssid="$(echo "$best" | cut -d'|' -f1)"
-    b_sigp="$(echo "$best" | cut -d'|' -f2)"
-    cur="$(nm_current_ssid || true)"
-    # threshold in %
-    [ "${b_sigp:-0}" -ge "$MIN_SIGNAL_PCT" ] || exit 0
-    [ "$cur" = "$b_ssid" ] && exit 0
-    nm_switch "$b_ssid" && notify "Switching → $b_ssid (${b_sigp}%)"
+    b_bssid="$(echo "$best" | cut -d'|' -f2)"
+    b_sig="$(echo "$best" | cut -d'|' -f3)"
+    cur="$(nm_current_bssid || true)"
+    [ "${b_sig:-0}" -ge "$MIN_SIGNAL_PCT" ] || exit 0
+    [ "$cur" = "$b_bssid" ] && exit 0
+    nm_switch "$b_ssid" "$b_bssid" && notify "Switching → $b_ssid ($b_bssid, ${b_sig}%)"
     exit 0
   fi
 
-  # Fallback path (RSSI dBm)
+  # fallback iw/wpa_cli
   if has iw || has wpa_cli; then
-    best_ssid=""; best_rssi="-999"
-    scan_rssi | while IFS='|' read -r ss rssi; do
-      for want in $PREFERRED_SSIDS; do
-        if [ "$ss" = "$want" ] && [ "$rssi" -gt "$best_rssi" ]; then
-          best_ssid="$ss"; best_rssi="$rssi"
+    best_ssid=""; best_bssid=""; best_rssi=-999
+    scan_rssi | while IFS='|' read -r ssid bssid rssi; do
+      for pair in $PREFERRED_BSSIDS; do
+        pref_ssid="$(echo $pair | cut -d'|' -f1)"
+        pref_bssid="$(echo $pair | cut -d'|' -f2)"
+        if [ "$ssid" = "$pref_ssid" ] && [ "$bssid" = "$pref_bssid" ] && [ "$rssi" -gt "$best_rssi" ]; then
+          best_ssid="$ssid"; best_bssid="$bssid"; best_rssi="$rssi"
         fi
       done
     done
-
-    [ -n "$best_ssid" ] || exit 0
+    [ -n "$best_bssid" ] || exit 0
     [ "$best_rssi" -ge "$MIN_RSSI" ] || exit 0
-
-    cur="$(wpa_current_ssid || true)"
-    [ "$cur" = "$best_ssid" ] && exit 0
-
-    wpa_switch "$best_ssid" && notify "Switching → $best_ssid (${best_rssi} dBm)"
+    cur="$(wpa_current_bssid || true)"
+    [ "$cur" = "$best_bssid" ] && exit 0
+    wpa_switch "$best_ssid" "$best_bssid" && notify "Switching → $best_ssid ($best_bssid, ${best_rssi} dBm)"
   fi
 }
 main "$@"
 SH
+
 chmod 0755 "$BIN"
 
 # ---- systemd timer every 2 minutes ----

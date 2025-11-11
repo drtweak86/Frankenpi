@@ -1,12 +1,11 @@
 #!/bin/sh
-# FrankenPi: Wi-Fi autoswitch (BSSID-aware)
+# FrankenPi: Wi-Fi autoswitch (BSSID-aware) - busybox/cron version
 set -eu
 . /usr/local/bin/frankenpi-compat.sh   # log, svc_*
 
 BIN="/usr/local/sbin/wifi-autoswitch"
 CFG="/etc/default/wifi-autoswitch"
-SVC="/etc/systemd/system/frankenpi-wifi-autoswitch.service"
-TMR="/etc/systemd/system/frankenpi-wifi-autoswitch.timer"
+CRON="/etc/cron.d/frankenpi-wifi-autoswitch"
 
 # ---- seed config (editable) ----
 if [ ! -f "$CFG" ]; then
@@ -43,16 +42,12 @@ notify() {
 
 has(){ command -v "$1" >/dev/null 2>&1; }
 
-# --------- NetworkManager path ----------
 nm_best() {
   nmcli -f BSSID,SSID,SIGNAL dev wifi list ifname "$WIFI_IFACE" 2>/dev/null \
     | awk -v pref="$PREFERRED_BSSIDS" '
       BEGIN{
         n=split(pref,P," ");
-        for(i=1;i<=n;i++) {
-          split(P[i],pair,"|");
-          map[pair[1]"|"pair[2]]=i
-        }
+        for(i=1;i<=n;i++) { split(P[i],pair,"|"); map[pair[1]"|"pair[2]]=i }
       }
       NR>1 && $1!=""{
         bssid=$1; ssid=$2; sig=$3;
@@ -72,16 +67,10 @@ nm_switch() {
   nmcli device wifi connect "$ssid" bssid "$bssid" ifname "$WIFI_IFACE" >/dev/null 2>&1
 }
 
-# --------- iw/wpa_cli fallback ----------
 scan_rssi() {
   if has iw; then
     iw dev "$WIFI_IFACE" scan 2>/dev/null \
-      | awk '
-        BEGIN{ ss=""; bssid=""; }
-        /^BSS / { split($2,B,"/"); bssid=B[1]; next }
-        /SSID:/ { ss=$0; sub(/^.*SSID: /,"",ss); next }
-        /signal:/ && ss!="" { sig=$0; sub(/^.*signal: /,"",sig); sub(/ dBm.*/,"",sig); printf("%s|%s|%s\n", ss,bssid,sig); ss=""; bssid="" }
-      '
+      | awk '/^BSS /{b=$2} /SSID:/ {s=$0; sub(/^.*SSID: /,"",s)} /signal:/ {sig=$0; sub(/^.*signal: /,"",sig); printf("%s|%s|%s\n",s,b,sig)}'
   elif has wpa_cli; then
     wpa_cli -i "$WIFI_IFACE" scan >/dev/null 2>&1 || true
     sleep 1
@@ -116,7 +105,6 @@ main() {
     exit 0
   fi
 
-  # fallback iw/wpa_cli
   if has iw || has wpa_cli; then
     best_ssid=""; best_bssid=""; best_rssi=-999
     scan_rssi | while IFS='|' read -r ssid bssid rssi; do
@@ -140,33 +128,8 @@ SH
 
 chmod 0755 "$BIN"
 
-# ---- systemd timer every 2 minutes ----
-cat >"$SVC"<<'UNIT'
-[Unit]
-Description=FrankenPi Wi-Fi Autoswitch
-After=network-online.target
-Wants=network-online.target
+# ---- cron fallback for busybox ----
+mkdir -p /etc/cron.d
+echo '*/2 * * * * root /usr/local/sbin/wifi-autoswitch >/dev/null 2>&1' > "$CRON"
 
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/wifi-autoswitch
-UNIT
-
-cat >"$TMR"<<'UNIT'
-[Unit]
-Description=Run FrankenPi Wi-Fi Autoswitch periodically
-
-[Timer]
-OnBootSec=1min
-OnUnitActiveSec=2min
-AccuracySec=15s
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-UNIT
-
-svc_enable frankenpi-wifi-autoswitch.timer || true
-svc_start  frankenpi-wifi-autoswitch.timer || true
-
-log "[33_wifi_autoswitch] installed; timer active."
+log "[33_wifi_autoswitch] installed; cron active every 2 minutes."

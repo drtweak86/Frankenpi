@@ -8,7 +8,11 @@ CRON="/etc/cron.d/frankenpi-maint"
 
 # helper to resolve Kodi home
 kodi_home() {
-  if id xbian >/dev/null 2>&1; then echo /home/xbian/.kodi; else echo /root/.kodi; fi
+  if id xbian >/dev/null 2>&1; then
+    echo /home/xbian/.kodi
+  else
+    echo /root/.kodi
+  fi
 }
 
 # ---- maintenance worker ----
@@ -17,16 +21,20 @@ cat >"$BIN"<<'SH'
 set -eu
 
 ts(){ date '+%F %T'; }
-log(){ echo "[maint] $*"; }
+log(){ echo "[maint] $(ts) $*"; }
+
+kodi_home() {
+  if id xbian >/dev/null 2>&1; then echo /home/xbian/.kodi; else echo /root/.kodi; fi
+}
 
 KH="$(kodi_home)"
 DBDIR="$KH/userdata/Database"
 TMPDIR="$KH/temp"
 THUMBS="$KH/userdata/Thumbnails"
 
-log "===== $(ts) ===== starting weekly maintenance"
+log "===== starting weekly maintenance ====="
 
-# 1) APT housekeeping (Debian only; no-op elsewhere)
+# 1) APT housekeeping (Debian only)
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   log "apt: update/upgrade/autoremove/clean"
@@ -56,8 +64,8 @@ if command -v kodi-send >/dev/null 2>&1; then
 fi
 
 # 4) Temp/cache cleanup
-[ -d "$TMPDIR" ]  && find "$TMPDIR" -type f -mtime +7  -delete 2>/dev/null || true
-[ -d "$THUMBS" ] && find "$THUMBS" -type f -mtime +60 -delete 2>/dev/null || true
+[ -d "$TMPDIR" ] && find "$TMPDIR" -mindepth 1 -type f -mtime +7  -delete 2>/dev/null || true
+[ -d "$THUMBS" ] && find "$THUMBS" -mindepth 1 -type f -mtime +60 -delete 2>/dev/null || true
 find "$KH" -maxdepth 1 -type f -name 'kodi_crashlog*' -mtime +30 -delete 2>/dev/null || true
 
 # 5) Journald trim (if present)

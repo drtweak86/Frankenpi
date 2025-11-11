@@ -11,21 +11,12 @@ kodi_home() {
   u="$(kodi_user)"
   [ "$u" = "root" ] && echo /root/.kodi || echo "/home/$u/.kodi"
 }
-kodi_addons_dir() {
-  echo "$(kodi_home)/addons"
-}
-kodi_packages_dir() {
-  echo "$(kodi_addons_dir)/packages"
-}
+kodi_addons_dir() { echo "$(kodi_home)/addons"; }
+kodi_packages_dir() { echo "$(kodi_addons_dir)/packages"; }
 
-# --- Process & control (best-effort) ---
-kodi_running() {
-  pgrep -f "kodi.bin|xbmc.bin" >/dev/null 2>&1
-}
-kodi_send() {
-  command -v kodi-send >/dev/null 2>&1 || return 1
-  kodi-send "$@"
-}
+# --- Process & control ---
+kodi_running() { pgrep -f "kodi.bin|xbmc.bin" >/dev/null 2>&1; }
+kodi_send() { command -v kodi-send >/dev/null 2>&1 && kodi-send "$@"; }
 
 # --- Install an addon ZIP (local file) ---
 kodi_install_zip_file() {
@@ -38,7 +29,7 @@ kodi_install_zip_file() {
 
   cp -f "$zip" "$PKG_DIR/" || true
 
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d 2>/dev/null || echo "/tmp/kodi.$$")"
   unzip -oq "$zip" -d "$tmp" || { rm -rf "$tmp"; return 1; }
 
   for d in "$tmp"/*; do
@@ -55,8 +46,12 @@ kodi_install_zip_file() {
 # --- Install an addon ZIP (URL) ---
 kodi_install_zip_url() {
   url="$1"
-  tmpzip="$(mktemp --suffix=.zip)"
-  curl -fsSL -o "$tmpzip" "$url" || { log "[kodi] download failed: $url"; rm -f "$tmpzip"; return 1; }
-  kodi_install_zip_file "$tmpzip"
+  tmpzip="$(mktemp --suffix=.zip 2>/dev/null || echo "/tmp/kodi.$$")"
+  if curl -fsSL -o "$tmpzip" "$url"; then
+    log "[kodi] downloaded: $url"
+    kodi_install_zip_file "$tmpzip"
+  else
+    log "[kodi][WARN] download failed: $url"
+  fi
   rm -f "$tmpzip"
 }

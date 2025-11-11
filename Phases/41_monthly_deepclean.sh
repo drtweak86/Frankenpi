@@ -11,30 +11,50 @@ cat >"$BIN"<<'SH'
 #!/bin/sh
 set -eu
 ts(){ date '+%F %T'; }
-log(){ echo "[deepclean] $*"; }
+log(){ echo "[deepclean] $(ts) $*"; }
 
-if id xbian >/dev/null 2>&1; then KH="/home/xbian/.kodi"; else KH="/root/.kodi"; fi
+KH="$(id -u xbian >/dev/null 2>&1 && echo /home/xbian/.kodi || echo /root/.kodi)"
 PKG="$KH/addons/packages"
 ADDONS="$KH/addons"
+TMPDIR="$KH/temp"
 
-log "===== $(ts) ===== monthly deep clean start"
+log "===== monthly deep clean start ====="
 
 # 1) Prune old addon package zips (>90d)
-[ -d "$PKG" ] && find "$PKG" -type f -name '*.zip' -mtime +90 -print -delete 2>/dev/null || true
+if [ -d "$PKG" ]; then
+  log "pruning old addon zips (>90d) in $PKG"
+  find "$PKG" -mindepth 1 -type f -name '*.zip' -mtime +90 -print -delete 2>/dev/null || true
+fi
 
 # 2) Prune temp leftovers (>30d)
-[ -d "$KH/temp" ] && find "$KH/temp" -type f -mtime +30 -print -delete 2>/dev/null || true
+if [ -d "$TMPDIR" ]; then
+  log "pruning temp files (>30d) in $TMPDIR"
+  find "$TMPDIR" -mindepth 1 -type f -mtime +30 -print -delete 2>/dev/null || true
+fi
 
-# 3) Prune orphaned addon dirs
-[ -d "$ADDONS" ] && find "$ADDONS" -mindepth 1 -maxdepth 1 -type d ! -name 'packages' \
-  -exec sh -c '[ -f "$1/addon.xml" ] || { echo "[deepclean] orphan: $1"; rm -rf "$1"; }' sh {} \; 2>/dev/null || true
+# 3) Prune orphaned addon dirs (no addon.xml)
+if [ -d "$ADDONS" ]; then
+  log "pruning orphaned addon dirs in $ADDONS"
+  find "$ADDONS" -mindepth 1 -maxdepth 1 -type d ! -name 'packages' \
+    -exec sh -c '[ -f "$1/addon.xml" ] || { echo "[deepclean] orphan: $1"; rm -rf "$1"; }' sh {} \; 2>/dev/null || true
+fi
 
 # 4) System caches
-[ -d /var/cache/apt ] && find /var/cache/apt -type f -mtime +30 -delete 2>/dev/null || true
-[ -d /var/cache ] && find /var/cache -type f -size +50M -delete 2>/dev/null || true
+if [ -d /var/cache/apt ]; then
+  log "cleaning /var/cache/apt (>30d)"
+  find /var/cache/apt -type f -mtime +30 -print -delete 2>/dev/null || true
+fi
+
+if [ -d /var/cache ]; then
+  log "cleaning large files in /var/cache (>50M)"
+  find /var/cache -type f -size +50M -print -delete 2>/dev/null || true
+fi
 
 # 5) Journald trim
-command -v journalctl >/dev/null 2>&1 && journalctl --vacuum-time=30d >/dev/null 2>&1 || true
+if command -v journalctl >/dev/null 2>&1; then
+  log "trimming journald logs (>30d)"
+  journalctl --vacuum-time=30d >/dev/null 2>&1 || true
+fi
 
 log "deep clean done."
 SH

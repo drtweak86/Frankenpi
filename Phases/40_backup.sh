@@ -48,21 +48,23 @@ REMOTE="${REMOTE_NAME}:${REMOTE_PATH}"
 {
   echo "[backup] ===== $(ts) ====="
 
-  # Require rclone
-  if ! command -v rclone >/dev/null 2>&1; then
-    echo "[backup] rclone unavailable — abort"
-    exit 1
-  fi
+  # Require rclone and zip
+  command -v rclone >/dev/null 2>&1 || { echo "[backup] rclone unavailable — abort"; exit 1; }
+  command -v zip >/dev/null 2>&1 || { echo "[backup] zip unavailable — abort"; exit 1; }
 
   rclone mkdir "$REMOTE" || true
 
+  # Build safe include list
   TO_ZIP=""
   for p in $INCLUDE_LIST; do
-    [ -e "$p" ] && TO_ZIP="$TO_ZIP \"$p\"" || echo "[backup] skip missing: $p"
+    if [ -e "$p" ]; then
+      TO_ZIP="$TO_ZIP \"$p\""
+    else
+      echo "[backup] skip missing: $p"
+    fi
   done
-  [ -n "$TO_ZIP" ] || { echo "[backup] nothing to back up"; exit 1; }
 
-  [ -x "$(command -v zip)" ] || { echo "[backup] zip not found"; exit 1; }
+  [ -n "$TO_ZIP" ] || { echo "[backup] nothing to back up"; exit 1; }
 
   echo "[backup] zipping → $ZIP_PATH"
   eval zip -qr "\"$ZIP_PATH\"" $TO_ZIP

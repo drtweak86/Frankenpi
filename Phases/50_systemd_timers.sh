@@ -1,71 +1,35 @@
-#!/usr/bin/env bash
-# 50_systemd_timers.sh — Install FrankenPi backup + maintenance timers
-set -euo pipefail
+#!/bin/sh
+# 50_busybox_timers.sh — Install FrankenPi backup + maintenance cron jobs
+set -eu
 
-echo "[50_systemd_timers] Installing systemd backup & maintenance units…"
+echo "[50_busybox_timers] Installing backup & maintenance scripts + cron jobs…"
 
-# --- install script binaries ---
-install -D -m 0755 /opt/frankenpi/phases/40_backup.sh /usr/local/bin/frankenpi-backup
-install -D -m 0755 /opt/frankenpi/phases/41_maintenance.sh /usr/local/bin/frankenpi-maintenance
+# --- install scripts ---
+install -D -m 0755 /opt/frankenpi/phases/40_backup.sh /usr/local/sbin/frankenpi-backup
+install -D -m 0755 /opt/frankenpi/phases/41_maintenance.sh /usr/local/sbin/frankenpi-maint
+install -D -m 0755 /opt/frankenpi/phases/42_deepclean.sh /usr/local/sbin/frankenpi-deepclean
 
-# --- systemd service + timer: backup ---
-tee /etc/systemd/system/frankenpi-backup.service >/dev/null <<'EOF'
-[Unit]
-Description=FrankenPi weekly cloud backup
-After=network-online.target
+# --- create cron entries ---
+CRON_FILE="/etc/cron.d/frankenpi"
 
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/frankenpi-backup
-Nice=10
+# backup: weekly Sunday 04:30
+# maintenance: weekly Saturday 03:40
+# deep clean: monthly 1st day 04:10
+cat > "$CRON_FILE" <<'EOF'
+# FrankenPi cron jobs
 
-[Install]
-WantedBy=multi-user.target
+# weekly cloud backup: Sunday 04:30
+30 4 * * 0 root /usr/local/sbin/frankenpi-backup >/dev/null 2>&1
+
+# weekly maintenance: Saturday 03:40
+40 3 * * 6 root /usr/local/sbin/frankenpi-maint >/dev/null 2>&1
+
+# monthly deep clean: 1st of month 04:10
+10 4 1 * * root /usr/local/sbin/frankenpi-deepclean >/dev/null 2>&1
 EOF
 
-tee /etc/systemd/system/frankenpi-backup.timer >/dev/null <<'EOF'
-[Unit]
-Description=Run FrankenPi backup weekly
+chmod 0644 "$CRON_FILE"
 
-[Timer]
-OnCalendar=weekly
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
-
-# --- systemd service + timer: maintenance ---
-tee /etc/systemd/system/frankenpi-maintenance.service >/dev/null <<'EOF'
-[Unit]
-Description=FrankenPi weekly maintenance tasks
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/frankenpi-maintenance
-Nice=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-tee /etc/systemd/system/frankenpi-maintenance.timer >/dev/null <<'EOF'
-[Unit]
-Description=Run FrankenPi maintenance weekly
-
-[Timer]
-OnCalendar=weekly
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
-
-# --- enable & start ---
-systemctl daemon-reload
-systemctl enable --now frankenpi-backup.timer
-systemctl enable --now frankenpi-maintenance.timer
-
-echo "[50_systemd_timers] Done — timers active."
-echo "  Check with: systemctl list-timers --all | grep frankenpi"
+echo "[50_busybox_timers] Installed scripts and cron jobs."
+echo "  Check cron entries with: cat $CRON_FILE"
+echo "  Cron should now run backups, maintenance, and deep clean automatically."
